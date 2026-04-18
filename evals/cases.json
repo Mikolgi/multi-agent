@@ -1,0 +1,74 @@
+[
+  {
+    "id": "backend_intern_basic",
+    "mode": "multi",
+    "objective": "Собери резюме под стажировку Python backend разработчика.",
+    "candidate_profile": "# Профиль кандидата\n- Имя: Алексей Петров\n- Цель: Python Backend Intern\n- Образование: 3 курс Computer Science\n- Опыт:\n  - Сделал Telegram-бота для учета расходов на Python и SQLite\n  - Разработал REST API для учебного проекта на FastAPI\n- Навыки:\n  - Python, FastAPI, SQL, SQLite, Git, Docker basics\n- Ограничения:\n  - Нет коммерческого опыта",
+    "vacancy_text": "# Вакансия\nИщем junior Python backend разработчика. Важны Python, REST API, SQL, Git. FastAPI будет плюсом. Docker приветствуется.",
+    "required_resume_keywords": [
+      "python",
+      "fastapi",
+      "sql"
+    ],
+    "required_match_keywords": [
+      "git",
+      "docker"
+    ],
+    "required_critic_keywords": [
+      "опыт",
+      "факт"
+    ],
+    "forbidden_keywords": [
+      "kubernetes",
+      "aws",
+      "5 лет"
+    ]
+  },
+  {
+    "id": "data_gap_detection",
+    "mode": "multi",
+    "objective": "Собери честное резюме под junior backend вакансию без выдумывания фактов.",
+    "candidate_profile": "# Профиль кандидата\n- Имя: Мария Иванова\n- Цель: Junior Backend Developer\n- Образование: 2 курс прикладной информатики\n- Проекты:\n  - Учебный API на FastAPI\n- Навыки:\n  - Python, FastAPI, SQL basics\n- Ограничения:\n  - Нет коммерческого опыта\n  - Нет Docker\n  - Нет тестирования",
+    "vacancy_text": "# Вакансия\nНужен junior backend engineer с Python, SQL, Docker, тестированием, пониманием HTTP и Git.",
+    "required_resume_keywords": [
+      "python",
+      "fastapi"
+    ],
+    "required_match_keywords": [
+      "docker",
+      "тест"
+    ],
+    "required_critic_keywords": [
+      "пробел",
+      "docker"
+    ],
+    "forbidden_keywords": [
+      "pytest",
+      "kubernetes",
+      "production"
+    ]
+  },
+  {
+    "id": "frontend_mismatch_awareness",
+    "mode": "multi",
+    "objective": "Подготовь резюме и оцени соответствие вакансии.",
+    "candidate_profile": "# Профиль кандидата\n- Имя: Илья Смирнов\n- Цель: Backend Intern\n- Опыт:\n  - Написал сервис авторизации на FastAPI\n  - Работал с PostgreSQL и SQLAlchemy в учебном проекте\n- Навыки:\n  - Python, FastAPI, PostgreSQL, SQLAlchemy, Git",
+    "vacancy_text": "# Вакансия\nFrontend React intern. Требуются React, TypeScript, CSS, UI, HTML.",
+    "required_resume_keywords": [
+      "python",
+      "fastapi"
+    ],
+    "required_match_keywords": [
+      "react",
+      "typescript"
+    ],
+    "required_critic_keywords": [
+      "нерелевант",
+      "вакан"
+    ],
+    "forbidden_keywords": [
+      "next.js",
+      "redux"
+    ]
+  }
+]

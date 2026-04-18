@@ -1,0 +1,21 @@
+services:
+  resume-copilot-app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: resume-copilot-app
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+      OLLAMA_MODEL: qwen3.5:4b
+      OLLAMA_TIMEOUT: "300"
+      OLLAMA_NUM_PREDICT: "384"
+      MEMORY_LIMIT: "3"
+      OBSERVABILITY_PATH: /app/logs/runs.jsonl
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../data:/app/data
+      - ../../logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
