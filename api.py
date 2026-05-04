@@ -35,6 +35,9 @@ class RunResponse(BaseModel):
     run_id: str | None = None
     total_duration_ms: int | None = None
     agent_durations_ms: dict[str, int] = Field(default_factory=dict)
+    route: list[str] = Field(default_factory=list)
+    supervisor_reason: str | None = None
+    supervisor_risks: list[str] = Field(default_factory=list)
 
 
 class AgentTraceResponse(BaseModel):
@@ -109,6 +112,9 @@ def run_agents(payload: RunRequest) -> RunResponse:
         run_id=result.run_id,
         total_duration_ms=result.total_duration_ms,
         agent_durations_ms=result.agent_durations_ms,
+        route=result.route,
+        supervisor_reason=result.supervisor_reason,
+        supervisor_risks=result.supervisor_risks,
     )
 
 

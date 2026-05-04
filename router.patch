@@ -1,0 +1,478 @@
+diff -ruN a/api.py b/api.py
+--- a/api.py
++++ b/api.py
+@@ -35,6 +35,9 @@
+     run_id: str | None = None
+     total_duration_ms: int | None = None
+     agent_durations_ms: dict[str, int] = Field(default_factory=dict)
++    route: list[str] = Field(default_factory=list)
++    supervisor_reason: str | None = None
++    supervisor_risks: list[str] = Field(default_factory=list)
+ 
+ 
+ class AgentTraceResponse(BaseModel):
+@@ -109,6 +112,9 @@
+         run_id=result.run_id,
+         total_duration_ms=result.total_duration_ms,
+         agent_durations_ms=result.agent_durations_ms,
++        route=result.route,
++        supervisor_reason=result.supervisor_reason,
++        supervisor_risks=result.supervisor_risks,
+     )
+ 
+ 
+diff -ruN a/app/orchestrator.py b/app/orchestrator.py
+--- a/app/orchestrator.py
++++ b/app/orchestrator.py
+@@ -1,5 +1,7 @@
+ from __future__ import annotations
+ 
++import json
++import re
+ import sys
+ import time
+ from collections.abc import Callable
+@@ -30,11 +32,20 @@
+     run_id: str | None = None
+     total_duration_ms: int | None = None
+     agent_durations_ms: dict[str, int] = field(default_factory=dict)
++    route: list[str] = field(default_factory=list)
++    supervisor_reason: str | None = None
++    supervisor_risks: list[str] = field(default_factory=list)
+ 
+     def render(self) -> str:
+         sections = [f"РЕЖИМ: {self.mode}", f"ЦЕЛЬ: {self.objective}"]
+         if self.run_id:
+             sections.append(f"RUN ID: {self.run_id}")
++        if self.route:
++            sections.append(f"МАРШРУТ: {' -> '.join(self.route)}")
++        if self.supervisor_reason:
++            sections.append(f"ПРИЧИНА МАРШРУТА: {self.supervisor_reason}")
++        if self.supervisor_risks:
++            sections.append("РИСКИ: " + "; ".join(self.supervisor_risks))
+         if self.total_duration_ms is not None:
+             sections.append(f"ВРЕМЯ: {self.total_duration_ms} мс")
+         if self.agent_durations_ms:
+@@ -46,7 +57,8 @@
+         sections.append("")
+         if self.profile_analysis:
+             sections.extend(("АНАЛИТИК ПРОФИЛЯ", self.profile_analysis, ""))
+-        sections.extend(("РЕДАКТОР РЕЗЮМЕ", self.resume_draft, ""))
++        if self.resume_draft:
++            sections.extend(("РЕДАКТОР РЕЗЮМЕ", self.resume_draft, ""))
+         if self.vacancy_match:
+             sections.extend(("СОПОСТАВЛЕНИЕ С ВАКАНСИЕЙ", self.vacancy_match, ""))
+         if self.critic_output:
+@@ -54,6 +66,14 @@
+         return "\n".join(sections).strip()
+ 
+ 
++@dataclass
++class RouteDecision:
++    route: list[str]
++    reason: str
++    risks: list[str] = field(default_factory=list)
++    raw_output: str = ""
++
++
+ class AgentState(TypedDict, total=False):
+     request: ResumeRequest
+     mode: str
+@@ -61,6 +81,10 @@
+     request_context: str
+     memory_context: str
+     supervisor_plan: str
++    supervisor_reason: str
++    supervisor_risks: list[str]
++    route: list[str]
++    route_index: int
+     profile_analysis: str
+     resume_draft: str
+     vacancy_match: str
+@@ -68,6 +92,37 @@
+     traces: list[AgentTrace]
+ 
+ 
++ROUTE_PROFILE_ANALYZER = "profile_analyzer"
++ROUTE_RESUME_WRITER = "resume_writer"
++ROUTE_VACANCY_MATCHER = "vacancy_matcher"
++ROUTE_CRITIC = "critic"
++ROUTE_END = "end"
++
++ALLOWED_ROUTE_NODES = {
++    ROUTE_PROFILE_ANALYZER,
++    ROUTE_RESUME_WRITER,
++    ROUTE_VACANCY_MATCHER,
++    ROUTE_CRITIC,
++}
++
++ROUTE_ALIASES = {
++    "profile-analyzer": ROUTE_PROFILE_ANALYZER,
++    "profile_analyzer": ROUTE_PROFILE_ANALYZER,
++    "resume-writer": ROUTE_RESUME_WRITER,
++    "resume_writer": ROUTE_RESUME_WRITER,
++    "vacancy-matcher": ROUTE_VACANCY_MATCHER,
++    "vacancy_matcher": ROUTE_VACANCY_MATCHER,
++    "critic": ROUTE_CRITIC,
++}
++
++DEFAULT_FULL_ROUTE = [
++    ROUTE_PROFILE_ANALYZER,
++    ROUTE_RESUME_WRITER,
++    ROUTE_VACANCY_MATCHER,
++    ROUTE_CRITIC,
++]
++
++
+ class BaseAgent:
+     def __init__(
+         self,
+@@ -133,14 +188,28 @@
+             llm=self._llm,
+             role="supervisor",
+             system_prompt=(
+-                "Ты главный агент-координатор в архитектуре Sub-agents. "
+-                "Твоя задача: понять запрос, выбрать порядок работы подчиненных агентов, "
+-                "зафиксировать риски и дать им короткий план. Не пиши итоговое резюме."
++                "Ты главный агент-маршрутизатор в архитектуре Supervisor + Sub-agents. "
++                "Твоя задача: понять запрос пользователя и выбрать маршрут выполнения. "
++                "Не пиши итоговое резюме. Верни только валидный JSON без markdown."
+             ),
+             skill_text=(
+-                "Сформируй план из 3-5 шагов. Укажи, какие данные использовать из профиля, "
+-                "вакансии, истории диалога и долгосрочной памяти. Если данных не хватает, "
+-                "пометь это как риск."
++                "Доступные агенты и имена для route:\n"
++                "- profile_analyzer: извлекает факты из профиля кандидата;\n"
++                "- resume_writer: пишет ATS-friendly черновик резюме;\n"
++                "- vacancy_matcher: адаптирует/сопоставляет результат с вакансией;\n"
++                "- critic: проверяет качество, риски и галлюцинации.\n\n"
++                "Выбери только нужных агентов. Правила:\n"
++                "- если нужно собрать или адаптировать резюме, обычно нужен resume_writer;\n"
++                "- если есть вакансия и запрос про адаптацию/соответствие, нужен vacancy_matcher;\n"
++                "- если нужно только проверить/оценить текст, достаточно critic;\n"
++                "- если нужно только извлечь факты/навыки из профиля, достаточно profile_analyzer;\n"
++                "- для полного сценария используй profile_analyzer -> resume_writer -> vacancy_matcher -> critic.\n\n"
++                "Формат ответа строго JSON:\n"
++                "{\n"
++                "  \"route\": [\"profile_analyzer\", \"resume_writer\", \"critic\"],\n"
++                "  \"reason\": \"почему выбран этот маршрут\",\n"
++                "  \"risks\": [\"какие риски учесть\"]\n"
++                "}"
+             ),
+         )
+         self._single_agent = BaseAgent(
+@@ -248,28 +317,78 @@
+     def _build_multi_graph(self):
+         graph = StateGraph(AgentState)
+         graph.add_node("supervisor", self._supervisor_node)
+-        graph.add_node("profile_analyzer", self._profile_node)
+-        graph.add_node("resume_writer", self._resume_node)
+-        graph.add_node("vacancy_matcher", self._vacancy_node)
+-        graph.add_node("critic", self._critic_node)
++        graph.add_node(ROUTE_PROFILE_ANALYZER, self._profile_node)
++        graph.add_node(ROUTE_RESUME_WRITER, self._resume_node)
++        graph.add_node(ROUTE_VACANCY_MATCHER, self._vacancy_node)
++        graph.add_node(ROUTE_CRITIC, self._critic_node)
++
++        route_targets = {
++            ROUTE_PROFILE_ANALYZER: ROUTE_PROFILE_ANALYZER,
++            ROUTE_RESUME_WRITER: ROUTE_RESUME_WRITER,
++            ROUTE_VACANCY_MATCHER: ROUTE_VACANCY_MATCHER,
++            ROUTE_CRITIC: ROUTE_CRITIC,
++            ROUTE_END: END,
++        }
++
+         graph.add_edge(START, "supervisor")
+-        graph.add_edge("supervisor", "profile_analyzer")
+-        graph.add_edge("profile_analyzer", "resume_writer")
+-        graph.add_edge("resume_writer", "vacancy_matcher")
+-        graph.add_edge("vacancy_matcher", "critic")
+-        graph.add_edge("critic", END)
++        graph.add_conditional_edges(
++            "supervisor",
++            self._next_route_node,
++            route_targets,
++        )
++        for node in ALLOWED_ROUTE_NODES:
++            graph.add_conditional_edges(
++                node,
++                self._next_route_node,
++                route_targets,
++            )
+         return graph.compile()
+ 
+     def _supervisor_node(self, state: AgentState) -> AgentState:
++        if state.get("mode") == "single":
++            supervisor_plan = (
++                "Single-agent baseline: маршрут принудительно ведет в resume_assistant. "
++                "Динамический router используется только в multi-режиме."
++            )
++            trace = AgentTrace(
++                agent="supervisor",
++                duration_ms=0,
++                output_chars=len(supervisor_plan),
++                streamed=False,
++            )
++            return self._with_trace(
++                state,
++                trace,
++                supervisor_plan=supervisor_plan,
++                supervisor_reason="Single-agent baseline без динамического выбора sub-agents.",
++                supervisor_risks=["Качество сравнивается с multi-режимом, но sub-agents не запускаются."],
++                route=["resume_assistant"],
++                route_index=0,
++            )
++
+         output, trace = self._run_agent(
+-            label="SUPERVISOR",
++            label="SUPERVISOR ROUTER",
+             agent=self._supervisor,
+-            objective="Составь план маршрутизации для подчиненных агентов.",
++            objective=(
++                "Выбери маршрут выполнения для запроса. "
++                "Верни только JSON с полями route, reason, risks."
++            ),
+             request_context=state["request_context"],
+             memory_context=state.get("memory_context", ""),
+-            stream=state.get("stream", False),
++            # JSON-маршрутизация является внутренним шагом, поэтому не стримим ее в CLI.
++            stream=False,
++        )
++        decision = self._parse_route_decision(output, state)
++        supervisor_plan = self._format_supervisor_plan(decision)
++        return self._with_trace(
++            state,
++            trace,
++            supervisor_plan=supervisor_plan,
++            supervisor_reason=decision.reason,
++            supervisor_risks=decision.risks,
++            route=decision.route,
++            route_index=0,
+         )
+-        return self._with_trace(state, trace, supervisor_plan=output)
+ 
+     def _single_node(self, state: AgentState) -> AgentState:
+         output, trace = self._run_agent(
+@@ -293,7 +412,11 @@
+             memory_context=state.get("memory_context", ""),
+             stream=state.get("stream", False),
+         )
+-        return self._with_trace(state, trace, profile_analysis=output)
++        return self._with_trace(
++            state,
++            trace,
++            **self._advance_route(state, profile_analysis=output),
++        )
+ 
+     def _resume_node(self, state: AgentState) -> AgentState:
+         context = (
+@@ -309,7 +432,11 @@
+             memory_context=state.get("memory_context", ""),
+             stream=state.get("stream", False),
+         )
+-        return self._with_trace(state, trace, resume_draft=output)
++        return self._with_trace(
++            state,
++            trace,
++            **self._advance_route(state, resume_draft=output),
++        )
+ 
+     def _vacancy_node(self, state: AgentState) -> AgentState:
+         context = (
+@@ -326,7 +453,11 @@
+             memory_context=state.get("memory_context", ""),
+             stream=state.get("stream", False),
+         )
+-        return self._with_trace(state, trace, vacancy_match=output)
++        return self._with_trace(
++            state,
++            trace,
++            **self._advance_route(state, vacancy_match=output),
++        )
+ 
+     def _critic_node(self, state: AgentState) -> AgentState:
+         context = (
+@@ -344,7 +475,132 @@
+             memory_context=state.get("memory_context", ""),
+             stream=state.get("stream", False),
+         )
+-        return self._with_trace(state, trace, critic_output=output)
++        return self._with_trace(
++            state,
++            trace,
++            **self._advance_route(state, critic_output=output),
++        )
++
++    def _next_route_node(self, state: AgentState) -> str:
++        route = state.get("route") or DEFAULT_FULL_ROUTE
++        route_index = state.get("route_index", 0)
++        if route_index >= len(route):
++            return ROUTE_END
++        next_node = route[route_index]
++        if next_node not in ALLOWED_ROUTE_NODES:
++            return ROUTE_END
++        return next_node
++
++    @staticmethod
++    def _advance_route(state: AgentState, **updates: object) -> dict[str, object]:
++        if "route" in state:
++            updates["route_index"] = state.get("route_index", 0) + 1
++        return updates
++
++    def _parse_route_decision(self, raw_output: str, state: AgentState) -> RouteDecision:
++        try:
++            payload = self._extract_json_object(raw_output)
++            route = payload.get("route", [])
++            reason = str(payload.get("reason") or "Supervisor выбрал маршрут по запросу.").strip()
++            risks_value = payload.get("risks", [])
++            risks = [str(item).strip() for item in risks_value if str(item).strip()] if isinstance(risks_value, list) else []
++            route = self._normalize_route(route)
++            route = self._validate_route(route=route, state=state)
++            if not route:
++                raise ValueError("empty route")
++            return RouteDecision(route=route, reason=reason, risks=risks, raw_output=raw_output)
++        except Exception:
++            fallback = self._fallback_route(state)
++            return RouteDecision(
++                route=fallback,
++                reason="Supervisor вернул невалидный JSON или некорректный route, поэтому применен безопасный fallback-маршрут.",
++                risks=["Маршрут выбран fallback-логикой, стоит проверить supervisor output в Langfuse."],
++                raw_output=raw_output,
++            )
++
++    @staticmethod
++    def _extract_json_object(raw_output: str) -> dict:
++        text = raw_output.strip()
++        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
++        if fenced:
++            text = fenced.group(1)
++        else:
++            json_object = re.search(r"\{.*\}", text, flags=re.DOTALL)
++            if json_object:
++                text = json_object.group(0)
++        payload = json.loads(text)
++        if not isinstance(payload, dict):
++            raise ValueError("Supervisor response is not a JSON object")
++        return payload
++
++    @staticmethod
++    def _normalize_route(route: object) -> list[str]:
++        if not isinstance(route, list):
++            return []
++        normalized: list[str] = []
++        for item in route:
++            key = str(item).strip().lower().replace("-", "_")
++            canonical = ROUTE_ALIASES.get(key)
++            if canonical and canonical not in normalized:
++                normalized.append(canonical)
++        return normalized
++
++    def _validate_route(self, route: list[str], state: AgentState) -> list[str]:
++        request = state["request"]
++        has_vacancy = bool(request.vacancy_text.strip())
++        validated = [node for node in route if node in ALLOWED_ROUTE_NODES]
++
++        # Без текста вакансии vacancy_matcher чаще всего будет гадать, поэтому убираем его.
++        if not has_vacancy:
++            validated = [node for node in validated if node != ROUTE_VACANCY_MATCHER]
++
++        # Если маршрут пишет резюме, но не проверяет его, добавляем critic как safety gate.
++        if ROUTE_RESUME_WRITER in validated and ROUTE_CRITIC not in validated:
++            validated.append(ROUTE_CRITIC)
++
++        # Если есть vacancy_matcher, ему полезен хотя бы анализ профиля перед сопоставлением.
++        if ROUTE_VACANCY_MATCHER in validated and ROUTE_PROFILE_ANALYZER not in validated:
++            validated.insert(0, ROUTE_PROFILE_ANALYZER)
++
++        return validated
++
++    def _fallback_route(self, state: AgentState) -> list[str]:
++        request = state["request"]
++        objective = request.objective.lower()
++        has_vacancy = bool(request.vacancy_text.strip())
++
++        critique_words = ("проверь", "оцени", "критик", "критика", "ревью", "ошиб", "риск")
++        analysis_words = ("проанализ", "извлеки", "вытащи", "факты", "навыки", "профиль")
++        match_words = ("подхожу", "соответств", "сравни", "сопостав", "match", "ваканс")
++        write_words = ("резюме", "черновик", "собери", "напиши", "адаптир", "улучши", "подправ")
++
++        wants_critique = any(word in objective for word in critique_words)
++        wants_analysis = any(word in objective for word in analysis_words)
++        wants_match = any(word in objective for word in match_words)
++        wants_write = any(word in objective for word in write_words)
++
++        if wants_critique and not wants_write and not wants_match:
++            return [ROUTE_CRITIC]
++        if wants_analysis and not wants_write and not has_vacancy:
++            return [ROUTE_PROFILE_ANALYZER]
++        if wants_match and has_vacancy and not wants_write:
++            return [ROUTE_PROFILE_ANALYZER, ROUTE_VACANCY_MATCHER, ROUTE_CRITIC]
++        if has_vacancy:
++            return [*DEFAULT_FULL_ROUTE]
++        return [ROUTE_PROFILE_ANALYZER, ROUTE_RESUME_WRITER, ROUTE_CRITIC]
++
++    @staticmethod
++    def _format_supervisor_plan(decision: RouteDecision) -> str:
++        risks = decision.risks or ["Явно не выдумывать факты, которых нет в профиле."]
++        return "\n".join(
++            [
++                "Supervisor route decision",
++                f"Маршрут: {' -> '.join(decision.route)}",
++                f"Причина: {decision.reason}",
++                "Риски:",
++                *[f"- {risk}" for risk in risks],
++            ]
++        )
+ 
+     def _run_agent(
+         self,
+@@ -427,7 +683,7 @@
+         )
+ 
+     @staticmethod
+-    def _with_trace(state: AgentState, trace: AgentTrace, **updates: str) -> AgentState:
++    def _with_trace(state: AgentState, trace: AgentTrace, **updates: object) -> AgentState:
+         traces = [*state.get("traces", []), trace]
+         return {"traces": traces, **updates}
+ 
+@@ -486,6 +742,9 @@
+                         resume_draft=final_state.get("resume_draft", ""),
+                         vacancy_match=final_state.get("vacancy_match"),
+                         critic_output=final_state.get("critic_output"),
++                        route=final_state.get("route", []),
++                        supervisor_reason=final_state.get("supervisor_reason"),
++                        supervisor_risks=final_state.get("supervisor_risks", []),
+                     )
+ 
+                     total_duration_ms = int((time.perf_counter() - started_perf) * 1000)
+@@ -507,6 +766,8 @@
+                             "status": "ok",
+                             "run_id": run_id,
+                             "total_duration_ms": total_duration_ms,
++                            "route": result.route,
++                            "supervisor_reason": result.supervisor_reason,
+                             "agents": [trace.agent for trace in traces],
+                         },
+                     )
+@@ -532,12 +793,19 @@
+                 )
+                 if part
+             )
++            executor_output = (
++                result.resume_draft
++                or result.vacancy_match
++                or result.profile_analysis
++                or result.critic_output
++                or ""
++            )
+             self._memory.add(
+                 MemoryEntry(
+                     task=result.objective,
+                     mode=result.mode,
+                     planner_output=planner_output or None,
+-                    executor_output=result.resume_draft,
++                    executor_output=executor_output,
+                     critic_output=result.critic_output,
+                 ),
+                 run_id=run_id,

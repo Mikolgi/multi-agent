@@ -36,5 +36,5 @@ class AppConfig:
     )
     langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
     langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")
-    langfuse_host: str = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+    langfuse_host: str = os.getenv("LANGFUSE_BASE_URL", os.getenv("LANGFUSE_HOST", "http://localhost:3001"))
     langfuse_enabled: bool = os.getenv("LANGFUSE_ENABLED", "0") == "1"
