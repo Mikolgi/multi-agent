@@ -39,9 +39,8 @@ class ObservabilityStore:
 
     def record_run(self, trace: RunTrace) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = asdict(trace)
         with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(asdict(trace), ensure_ascii=False) + "\n")
 
     def list_recent(self, limit: int = 10) -> list[dict]:
         items = self._load_all()
@@ -77,7 +76,8 @@ class ObservabilityStore:
         ok_runs = sum(1 for item in runs if item.get("status") == "ok")
         error_runs = sum(1 for item in runs if item.get("status") == "error")
         avg_total_duration_ms = round(
-            sum(int(item.get("total_duration_ms", 0)) for item in runs) / len(runs), 1
+            sum(int(item.get("total_duration_ms", 0)) for item in runs) / len(runs),
+            1,
         )
         slowest_run = max(runs, key=lambda item: int(item.get("total_duration_ms", 0)))
 
@@ -149,8 +149,7 @@ class ObservabilityStore:
             return []
 
         items: list[dict] = []
-        for line in self._path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            items.append(json.loads(line))
+        for line in self._path.read_text(encoding="utf-8-sig").splitlines():
+            if line.strip():
+                items.append(json.loads(line))
         return items

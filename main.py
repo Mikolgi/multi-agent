@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("single", "multi"),
         default="multi",
-        help="Запуск одного агента или полного мультиагентного пайплайна.",
+        help="Single-agent baseline или полный мультиагентный LangGraph pipeline.",
     )
     parser.add_argument(
         "--model",
@@ -127,10 +127,7 @@ def run_chat(
             print(session.vacancy_text or "[пусто]")
             print(f"\nФайл вакансии: {config.session_vacancy_path}")
             print("\nИстория чата:\n")
-            if session.history:
-                print("\n\n".join(session.history[-4:]))
-            else:
-                print("[пусто]")
+            print("\n\n".join(session.history[-4:]) if session.history else "[пусто]")
             continue
         if objective == "/session-clear":
             session.clear()
@@ -185,9 +182,7 @@ def run_chat(
         if not stream:
             print(result.render())
         else:
-            print(
-                f"[run_id={result.run_id} duration={result.total_duration_ms}мс]"
-            )
+            print(f"[run_id={result.run_id} duration={result.total_duration_ms}мс]")
         session.history.append(f"Пользователь: {objective}")
         session.history.append(f"Ассистент:\n{result.render()}")
 

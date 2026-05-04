@@ -1,124 +1,107 @@
 # Resume Copilot
 
-Локальная мультиагентная система для создания и адаптации резюме под IT-вакансии.
-Работает поверх Ollama и использует orchestrator, ролевых агентов, markdown-skills,
-долгосрочную память и базовый слой observability.
+Локальная мультиагентная система для создания и адаптации резюме под вакансию. Проект построен как Sub-agents архитектура: главный supervisor-agent координирует подчиненных агентов, а выполнение графа описано через `LangGraph`.
 
 ## Стек
 
 - LLM: `qwen3.5:4b`
-- Локальный инференс: `Ollama`
+- Локальный inference: `Ollama`
+- Оркестрация агентов: `LangGraph`
+- Память: `mem0` + локальный `Qdrant` on disk
+- Observability: JSONL traces, FastAPI dashboard, Grafana + Loki + Promtail, optional `Langfuse`
+- API: `FastAPI`
 - HTTP client: `httpx`
-- API-слой: `FastAPI`
 
-## Структура проекта
+## Архитектура
 
-- `main.py` - CLI-вход
-- `api.py` - HTTP API
-- `bootstrap.py` - подхват user site-packages при проблемах окружения
-- `app/config.py` - runtime-конфиг
-- `app/llm.py` - клиент к локальной LLM
-- `app/domain.py` - доменные сущности и session state
-- `app/orchestrator.py` - orchestrator и ролевые агенты
-- `app/memory.py` - постоянная локальная память
-- `app/observability.py` - structured observability-логи
-- `app/skills.py` - загрузчик markdown-skills
-- `skills/*.md` - skill-файлы агентов
-- `data/session_profile.md` - текущий профиль кандидата для chat-режима
-- `data/session_vacancy.md` - текущая вакансия для chat-режима
-- `data/memory.jsonl` - история прогонов
-- `logs/runs.jsonl` - observability-логи по каждому запуску
+В режиме `multi` работает граф:
 
-## Запуск из CLI
-
-```powershell
-.\.venv\Scripts\python.exe main.py "Собери резюме под backend intern вакансию"
+```text
+START -> supervisor -> profile-analyzer -> resume-writer -> vacancy-matcher -> critic -> END
 ```
 
-Одиночный режим:
+`supervisor` является главным агентом. Он анализирует запрос, профиль, вакансию, историю сессии и долгосрочную память, затем формирует план для sub-agents. Остальные агенты stateless относительно себя: они получают нужный контекст от supervisor и общего state графа.
+
+Роли:
+
+- `supervisor` - координирует маршрут и фиксирует риски.
+- `profile-analyzer` - извлекает факты из профиля кандидата.
+- `resume-writer` - пишет ATS-friendly черновик резюме.
+- `vacancy-matcher` - проверяет соответствие вакансии и усиливает релевантные места.
+- `critic` - оценивает качество результата и находит риски.
+- `resume-assistant` - single-agent baseline для сравнения.
+
+## Память
+
+Есть два слоя:
+
+- Session state: профиль, вакансия и история текущего чата.
+- Long-term memory: `mem0` хранит прошлые результаты в локальном Qdrant, а `data/memory.jsonl` остается audit-log для демонстрации.
+
+Для `mem0` используется embedding-модель Ollama `nomic-embed-text`. Перед первым запуском лучше выполнить:
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --mode single "Сделай краткий черновик резюме"
+ollama pull nomic-embed-text
 ```
 
-Интерактивный чат:
+Если модель не подтянута заранее, `mem0` может попытаться скачать ее при первом обращении к памяти.
+
+## Запуск
 
 ```powershell
 .\.venv\Scripts\python.exe main.py --chat
 ```
 
-В чате доступны команды:
-
-- `/show` - показать текущие профиль, вакансию и историю
-- `/session-clear` - очистить session state: профиль, вакансию и историю чата
-- `/set-profile` - обновить профиль кандидата и сохранить его на диск
-- `/set-vacancy` - обновить вакансию и сохранить ее на диск
-- `/memory-show` - показать последние записи долгосрочной памяти
-- `/memory-clear` - очистить долгосрочную память
-- `/runs-show` - показать последние observability-логи
-- `/runs-clear` - очистить observability-логи
-- `/exit` или `/quit` - выйти
-
-Свои файлы:
+Обычный запуск:
 
 ```powershell
-.\.venv\Scripts\python.exe main.py `
-  --candidate-file my_profile.md `
-  --vacancy-file my_vacancy.md `
-  "Собери резюме под backend intern вакансию"
+.\.venv\Scripts\python.exe main.py --no-stream "Собери резюме под backend intern вакансию"
 ```
 
-## Запуск HTTP API
+Single-agent baseline:
+
+```powershell
+.\.venv\Scripts\python.exe main.py --mode single --no-stream "Сделай краткий черновик резюме"
+```
+
+Команды в чате:
+
+- `/set-profile` - сохранить профиль кандидата в `data/session_profile.md`.
+- `/set-vacancy` - сохранить вакансию в `data/session_vacancy.md`.
+- `/show` - показать session state.
+- `/history-clear` - очистить историю текущего чата.
+- `/session-clear` - очистить профиль, вакансию и историю.
+- `/memory-show` - показать последние записи долгосрочной памяти.
+- `/memory-clear` - очистить `mem0` и audit-log.
+- `/runs-show` - показать последние observability-логи.
+- `/runs-clear` - очистить observability-логи.
+- `/exit` или `/quit` - выйти.
+
+## HTTP API
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn api:app --reload
 ```
 
-Потом открыть: 
+Полезные страницы:
 
 - `http://127.0.0.1:8000/docs`
 - `http://127.0.0.1:8000/health`
-- `http://127.0.0.1:8000/runs/recent`
-- `http://127.0.0.1:8000/runs/summary`
 - `http://127.0.0.1:8000/observability`
+- `http://127.0.0.1:8000/runs/summary`
+- `http://127.0.0.1:8000/runs/recent`
 
-## Контейнер приложения
+## Контейнеризация
 
-Приложение можно запускать отдельно в Docker. `Ollama` при этом пока остается на хосте.
-
-Сборка образа:
-
-```powershell
-docker build -t resume-copilot-app .
-```
-
-Запуск через compose:
+Приложение можно запускать в Docker, при этом Ollama остается на хосте:
 
 ```powershell
 docker compose -f ops/app/docker-compose.yml up -d --build
 ```
 
-После запуска:
-
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/observability`
-
-Что важно:
-
-- контейнер ходит к локальной `Ollama` через `http://host.docker.internal:11434/v1`
-- `data/` и `logs/` примонтированы с хоста, поэтому память и observability сохраняются вне контейнера
-
-Остановка:
-
-```powershell
-docker compose -f ops/app/docker-compose.yml down
-```
+Контейнер ходит к Ollama через `http://host.docker.internal:11434/v1`.
 
 ## Grafana + Loki
-
-Внешний стек observability лежит в `ops/observability/`.
-
-Запуск:
 
 ```powershell
 docker compose -f ops/observability/docker-compose.yml up -d
@@ -126,20 +109,24 @@ docker compose -f ops/observability/docker-compose.yml up -d
 
 После запуска:
 
-- `http://127.0.0.1:3000` - Grafana
-- логин: `admin`
-- пароль: `admin`
-- datasource `Loki` и dashboard `Resume Copilot Observability` будут подхвачены автоматически
+- Grafana: `http://127.0.0.1:3000`
+- login/password: `admin` / `admin`
+- Dashboard: `Resume Copilot Observability`
 
-Что он читает:
+Promtail читает `logs/runs.jsonl`, Loki хранит логи, Grafana показывает runs, errors, latency и raw traces.
 
-- `logs/runs.jsonl` через `Promtail`
+## Langfuse
 
-Остановка:
+Langfuse SDK встроен опционально. Для включения:
 
 ```powershell
-docker compose -f ops/observability/docker-compose.yml down
+$env:LANGFUSE_ENABLED="1"
+$env:LANGFUSE_PUBLIC_KEY="..."
+$env:LANGFUSE_SECRET_KEY="..."
+$env:LANGFUSE_HOST="http://localhost:3000"
 ```
+
+Если переменные не заданы, Langfuse не используется, а локальная observability продолжает работать.
 
 ## Evals
 
@@ -147,30 +134,17 @@ docker compose -f ops/observability/docker-compose.yml down
 .\.venv\Scripts\python.exe evals/run_evals.py
 ```
 
-Результаты сохраняются в:
-
-- `evals/results.json`
+Результаты сохраняются в `evals/results.json`.
 
 ## Переменные окружения
 
-- `OLLAMA_BASE_URL` - default `http://localhost:11434/v1`
-- `OLLAMA_API_KEY` - default `ollama`
-- `OLLAMA_MODEL` - default `qwen3.5:4b`
-- `OLLAMA_TEMPERATURE` - default `0.3`
-- `OLLAMA_TIMEOUT` - timeout запроса в секундах, по умолчанию `300`
-- `OLLAMA_NUM_PREDICT` - максимум генерируемых токенов на один вызов агента, по умолчанию `384`
-- `MEMORY_LIMIT` - сколько релевантных прошлых прогонов подмешивать в промпт
-- `OBSERVABILITY_PATH` - путь до JSONL-лога по запускам, по умолчанию `logs/runs.jsonl`
-
-## Архитектура
-
-- `orchestrator` выбирает путь выполнения и сохраняет результаты в память
-- `profile-analyzer` извлекает структурированные факты из профиля кандидата
-- `resume-writer` пишет основной черновик резюме
-- `vacancy-matcher` адаптирует черновик под вакансию и показывает пробелы по требованиям
-- `critic` проверяет итог на ясность, доказательность и ATS-friendly качество
-- `session state` хранит текущий профиль кандидата, текущую вакансию и историю текущего диалога
-- профиль и вакансия для session state сохраняются в `data/session_profile.md` и `data/session_vacancy.md`
-- `long-term memory` хранит прошлые прогоны в `data/memory.jsonl` и достает релевантные записи по lexical overlap
-- `observability` пишет в `logs/runs.jsonl` run_id, status, total duration, поагентные тайминги, ошибки и базовые метаданные запуска
-- `observability API` дает `recent`, `summary`, `errors` и `run details`, а `/observability` показывает это в браузере
+- `OLLAMA_BASE_URL` - default `http://localhost:11434/v1`.
+- `OLLAMA_MODEL` - default `qwen3.5:4b`.
+- `OLLAMA_TEMPERATURE` - default `0.3`.
+- `OLLAMA_TIMEOUT` - default `300`.
+- `OLLAMA_NUM_PREDICT` - default `384`.
+- `MEMORY_LIMIT` - сколько релевантных записей из mem0 добавлять в prompt.
+- `MEM0_EMBEDDER_MODEL` - default `nomic-embed-text`.
+- `MEM0_QDRANT_PATH` - default `data/mem0_qdrant`.
+- `MEM0_HISTORY_DB_PATH` - default `data/mem0_history.db`.
+- `OBSERVABILITY_PATH` - default `logs/runs.jsonl`.

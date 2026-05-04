@@ -3,3 +3,8 @@ fastapi
 uvicorn
 pydantic
 httpx
+langgraph
+langchain-core
+mem0ai
+ollama
+langfuse
